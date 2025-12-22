@@ -21,19 +21,61 @@ def _other(p: Player) -> Player:
     return "O" if p == "X" else "X"
 
 
+def _ordered_moves(board, to_play: Player) -> list[Move]:
+    """
+    Tactical move ordering:
+    1) Immediate winning moves
+    2) Immediate blocks
+    3) Center-first fallback
+    """
+    moves = board.valid_moves()
+    if not moves:
+        return moves
+
+    center = board.cols // 2
+    opp = _other(to_play)
+
+    winning = []
+    blocking = []
+    rest = []
+
+    for m in moves:
+        # Check winning move
+        board.drop(m, to_play)
+        if check_winner(board) == to_play:
+            board.undo(m)
+            return [m]  # forced win → best possible ordering
+        board.undo(m)
+
+        # Check blocking move
+        board.drop(m, opp)
+        blocks = check_winner(board) == opp
+        board.undo(m)
+
+        if blocks:
+            blocking.append(m)
+        else:
+            rest.append(m)
+
+    # Center-first for non-tactical moves
+    rest.sort(key=lambda m: abs(int(m) - center))
+    blocking.sort(key=lambda m: abs(int(m) - center))
+
+    return blocking + rest
+
+
 @dataclass(slots=True)
 class MinimaxAgent:
     name: str = "Minimax AI"
-    depth: int = 7                 # max depth cap (iterative deepening goes up to this)
+    depth: int = 7
     time_limit_sec: float = AI_TIME_LIMIT_SEC
-    temperature: int = 0           # 0 = best-only; >0 = choose among near-best within this eval margin
+    temperature: int = 0
     tt: TranspositionTable = field(default_factory=TranspositionTable)
     rng: random.Random = field(default_factory=random.Random)
 
-    # Stats for UI / benchmarking
+    # Stats
     last_info: dict = field(default_factory=dict)
 
-    # Internal counters per iteration
     _nodes: int = 0
     _tt_hits: int = 0
     _cutoffs: int = 0
@@ -56,8 +98,8 @@ class MinimaxAgent:
         best_score = -inf
         best_depth_reached = 0
 
-        # Reset TT per real move (keeps memory bounded for tournaments)
-        self.tt = TranspositionTable()
+        # Reset TT per move (bounded memory for league)
+        # self.tt = TranspositionTable()
 
         for d in range(1, self.depth + 1):
             if time.perf_counter() >= deadline:
@@ -82,22 +124,14 @@ class MinimaxAgent:
                 board.undo(m)
 
                 scored_moves.append((m, score))
-                if score > current_best_score:
-                    current_best_score = score
-
+                current_best_score = max(current_best_score, score)
                 alpha = max(alpha, current_best_score)
 
             if scored_moves:
-                # Temperature sampling at root:
-                # keep moves within (best - temperature), pick randomly among them
                 threshold = current_best_score - float(self.temperature)
                 candidates = [m for (m, s) in scored_moves if s >= threshold]
-
-                # If something odd happens, fall back to strict best
                 if not candidates:
-                    best_only = [m for (m, s) in scored_moves if s == current_best_score]
-                    candidates = best_only if best_only else [scored_moves[0][0]]
-
+                    candidates = [m for (m, s) in scored_moves if s == current_best_score]
                 best_move = self.rng.choice(candidates)
                 best_score = current_best_score
                 best_depth_reached = d
@@ -110,7 +144,7 @@ class MinimaxAgent:
             "cutoffs": self._cutoffs,
             "eval": int(best_score) if best_score not in (inf, -inf) else best_score,
             "move_col": int(best_move) + 1,
-            "time_ms": int(elapsed * 1000),
+            "time_ms": max(1, int(elapsed * 1000)),
             "time_limit_ms": int(self.time_limit_sec * 1000),
             "temperature": self.temperature,
         }
@@ -146,11 +180,7 @@ class MinimaxAgent:
             return cached
 
         v = -inf
-        moves = board.valid_moves()
-        center = board.cols // 2
-        moves = sorted(moves, key=lambda m: abs(int(m) - center))
-
-        for m in moves:
+        for m in _ordered_moves(board, to_play):
             if time.perf_counter() >= deadline:
                 break
 
@@ -185,11 +215,7 @@ class MinimaxAgent:
             return cached
 
         v = inf
-        moves = board.valid_moves()
-        center = board.cols // 2
-        moves = sorted(moves, key=lambda m: abs(int(m) - center))
-
-        for m in moves:
+        for m in _ordered_moves(board, to_play):
             if time.perf_counter() >= deadline:
                 break
 
@@ -204,3 +230,4 @@ class MinimaxAgent:
 
         self.tt.put(h, to_play, depth, v)
         return v
+

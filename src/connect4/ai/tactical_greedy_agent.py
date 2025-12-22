@@ -68,7 +68,7 @@ class TacticalGreedyAgent:
                 "cutoffs": 0,
                 "eval": 1_000_000,
                 "move_col": int(chosen) + 1,
-                "time_ms": int(elapsed * 1000),
+                "time_ms": max(1, int(elapsed * 1000)),
                 "time_limit_ms": int(self.time_limit_sec * 1000),
                 "temperature": self.temperature,
                 "note": "immediate_win",

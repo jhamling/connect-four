@@ -105,7 +105,7 @@ class BeamSearchAgent:
             "cutoffs": cutoffs,
             "eval": int(best_score) if best_score not in (inf, -inf) else best_score,
             "move_col": int(best_move) + 1,
-            "time_ms": int(elapsed * 1000),
+            "time_ms": max(1, int(elapsed * 1000)),
             "time_limit_ms": int(self.time_limit_sec * 1000),
             "beam_width": self.width,
             "temperature": self.temperature,
