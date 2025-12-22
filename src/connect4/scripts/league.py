@@ -431,27 +431,42 @@ def build_roster() -> List[Team]:
 
 
 
-def main():
-    from connect4.ai.minimax_agent import MinimaxAgent
-    from connect4.ai.greedy_agent import GreedyAgent
 
-    roster = [
-        Team("MM d7 200ms", lambda: MinimaxAgent(depth=7, time_limit_sec=0.2)),
-        Team("MM d7 200ms #2", lambda: MinimaxAgent(depth=7, time_limit_sec=0.2)),
-        Team("Greedy", lambda: GreedyAgent()),
-    ]
+def main() -> None:
+    roster = build_roster()
+    print(f"Roster size: {len(roster)} teams")
+
+    # These prompts let you scale runtime without editing code
+    gpp = input("Games per pairing (default 1): ").strip()
+    games_per_pair = int(gpp) if gpp else 1
+
+    ppt = input("Pairings per team per stage (default 4): ").strip()
+    stage_pairings_per_team = int(ppt) if ppt else 4
+
+    mg = input("Min games/team before prune (default 8): ").strip()
+    min_games_before_prune = int(mg) if mg else 8
+
+    kf = input("Keep fraction each prune (default 0.60): ").strip()
+    keep_fraction = float(kf) if kf else 0.60
+
+    fk = input("Final keep (default 3): ").strip()
+    final_keep = int(fk) if fk else 3
+
+    sd = input("Seed (default 1234): ").strip()
+    seed = int(sd) if sd else 1234
 
     league_auto_prune(
         roster,
-        games_per_pair=1,
-        stage_pairings_per_team=2,
-        min_games_before_prune=2,
-        keep_fraction=0.7,
-        final_keep=2,
-        seed=42,
+        games_per_pair=games_per_pair,
+        stage_pairings_per_team=stage_pairings_per_team,
+        min_games_before_prune=min_games_before_prune,
+        keep_fraction=keep_fraction,
+        final_keep=final_keep,
+        seed=seed,
     )
 
 
 if __name__ == "__main__":
     main()
+
 
