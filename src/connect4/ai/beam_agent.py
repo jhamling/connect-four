@@ -17,7 +17,7 @@ def _other(p: Player) -> Player:
 
 
 @dataclass(slots=True)
-class BeamSearchAgent:
+class BeamAgent:
     """
     Width-limited minimax (beam search).
     Knobs:

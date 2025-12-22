@@ -411,12 +411,35 @@ def league_auto_prune(
         )
 
 
+
+
 def build_roster() -> List[Team]:
-    from connect4.ai.minimax_agent import MinimaxAgent
+    # Import all agent classes by their REAL names (must match class definitions)
     from connect4.ai.random_agent import RandomAgent
+    from connect4.ai.weighted_random_agent import WeightedRandomAgent
+    from connect4.ai.greedy_agent import GreedyAgent
+    from connect4.ai.tactical_greedy_agent import TacticalGreedyAgent
+    from connect4.ai.heuristic_agent import HeuristicAgent
+    from connect4.ai.beam_agent import BeamAgent
+    from connect4.ai.beam2_agent import Beam2Agent
+    from connect4.ai.mcts_agent import MCTSAgent
+    from connect4.ai.expectiminimax_agent import ExpectiMiniMaxAgent
+    from connect4.ai.minimax_agent import MinimaxAgent
 
-    teams: List[Team] = [Team("Random", partial(RandomAgent))]
+    teams: List[Team] = []
 
+    # --- Baselines / variety ---
+    teams.append(Team("Random", partial(RandomAgent)))
+    teams.append(Team("WeightedRandom", partial(WeightedRandomAgent)))
+    teams.append(Team("Greedy", partial(GreedyAgent)))
+    teams.append(Team("TacticalGreedy", partial(TacticalGreedyAgent)))
+    teams.append(Team("Heuristic", partial(HeuristicAgent)))
+    teams.append(Team("Beam", partial(BeamAgent)))
+    teams.append(Team("Beam2", partial(Beam2Agent)))
+    teams.append(Team("MCTS", partial(MCTSAgent)))
+    teams.append(Team("ExpectiMiniMax", partial(ExpectiMiniMaxAgent)))
+
+    # --- Minimax variants (your main competitive pool) ---
     depths = [3, 5, 7, 9, 11]
     times = [0.05, 0.10, 0.20, 0.35, 0.75]
     temps = [0, 25, 75]
