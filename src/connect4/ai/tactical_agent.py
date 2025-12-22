@@ -1,12 +1,12 @@
-
 from __future__ import annotations
 
 import copy
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+import random
 
-from connect4.core.rules import check_winner, is_draw
+from connect4.core.rules import check_winner
 from connect4.game.state import GameState
 
 
@@ -14,7 +14,7 @@ def other(p: str) -> str:
     return "O" if p == "X" else "X"
 
 
-@dataclass
+@dataclass(slots=True)
 class TacticalAgent:
     """
     Fast tactical agent:
@@ -23,25 +23,64 @@ class TacticalAgent:
       3) Prefer center-ish columns
       4) Otherwise random valid move
 
-    This agent is intentionally cheap and can "spoil" weaker minimax settings.
+    Variant knobs (to generate multiple distinct Tactical agents like MM d/t/temp):
+      - seed: deterministic RNG seed
+      - center_bias: float (0.0 disables; higher = stronger center preference)
+      - top_k: choose randomly among top_k center-ranked moves
+      - win_policy: how to pick among multiple winning moves ("random" or "center")
+      - block_policy: how to pick among multiple blocking moves ("random" or "center")
+      - scan_limit: limit how many candidate columns we scan for win/block each turn
+          * None = scan all valid moves (strongest)
+          * small int = faster/weaker, produces meaningfully different variants
     """
     name: str = "Tactical"
-    center_bias: bool = True
+
     seed: int = 0
+    center_bias: float = 1.0
+    top_k: int = 3
+
+    win_policy: str = "random"    # "random" | "center"
+    block_policy: str = "center"  # "random" | "center"
+
+    scan_limit: Optional[int] = None
+
+    rng: random.Random = field(init=False)
+    last_info: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        import random
         self.rng = random.Random(self.seed)
-        self.last_info = {}
+        if self.center_bias < 0:
+            self.center_bias = 0.0
+        if self.top_k < 1:
+            self.top_k = 1
+        if self.win_policy not in ("random", "center"):
+            self.win_policy = "random"
+        if self.block_policy not in ("random", "center"):
+            self.block_policy = "center"
+        if self.scan_limit is not None and self.scan_limit < 1:
+            self.scan_limit = 1
 
-    def _winning_move(self, state: GameState, player: str) -> Optional[int]:
-        moves = state.board.valid_moves()
-        for c in moves:
+    def _center_sorted(self, state: GameState, moves: list[int]) -> list[int]:
+        if self.center_bias <= 0:
+            return moves[:]
+        center = state.board.cols // 2
+        return sorted(moves, key=lambda c: abs(c - center) * self.center_bias)
+
+    def _winning_moves(self, state: GameState, player: str, candidates: list[int]) -> list[int]:
+        wins: list[int] = []
+        for c in candidates:
             b2 = copy.deepcopy(state.board)
             b2.drop(c, player)
             if check_winner(b2) == player:
-                return c
-        return None
+                wins.append(c)
+        return wins
+
+    def _pick_among(self, state: GameState, moves: list[int], policy: str) -> int:
+        if len(moves) == 1:
+            return moves[0]
+        if policy == "center":
+            return self._center_sorted(state, moves)[0]
+        return self.rng.choice(moves)
 
     def choose_move(self, state: GameState) -> int:
         t0 = time.perf_counter()
@@ -55,41 +94,65 @@ class TacticalAgent:
         me = state.current
         opp = other(me)
 
-        # 1) win now
-        m = self._winning_move(state, me)
-        nodes += len(moves)
-        if m is not None:
-            self.last_info = {
-                "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
-                "nodes": nodes,
-                "depth": 1,
-            }
-            return m
+        # order candidates by center preference (if enabled)
+        ordered = self._center_sorted(state, moves)
 
-        # 2) block opponent win
-        m = self._winning_move(state, opp)
-        nodes += len(moves)
-        if m is not None:
-            self.last_info = {
-                "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
-                "nodes": nodes,
-                "depth": 1,
-            }
-            return m
+        # optionally scan only first N moves (speed/strength tradeoff variant)
+        scan = ordered if self.scan_limit is None else ordered[: min(self.scan_limit, len(ordered))]
 
-        # 3) center preference (Connect Four is center-favoring)
-        if self.center_bias:
-            # typical board is 7 columns; center index = 3
-            center = 3
-            moves_sorted = sorted(moves, key=lambda c: abs(c - center))
-            best = moves_sorted[0]
-            # small randomness among top few to avoid determinism
-            top_k = min(3, len(moves_sorted))
-            choice = self.rng.choice(moves_sorted[:top_k])
+        # 1) win now (if multiple, pick by win_policy)
+        winning = self._winning_moves(state, me, scan)
+        nodes += len(scan)
+        if winning:
+            choice = self._pick_among(state, winning, self.win_policy)
             self.last_info = {
                 "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
                 "nodes": nodes,
                 "depth": 1,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "top_k": self.top_k,
+                "win_policy": self.win_policy,
+                "block_policy": self.block_policy,
+                "scan_limit": self.scan_limit,
+                "note": "win",
+            }
+            return choice
+
+        # 2) block opponent win (if multiple, pick by block_policy)
+        blocks = self._winning_moves(state, opp, scan)
+        nodes += len(scan)
+        if blocks:
+            choice = self._pick_among(state, blocks, self.block_policy)
+            self.last_info = {
+                "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
+                "nodes": nodes,
+                "depth": 1,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "top_k": self.top_k,
+                "win_policy": self.win_policy,
+                "block_policy": self.block_policy,
+                "scan_limit": self.scan_limit,
+                "note": "block",
+            }
+            return choice
+
+        # 3) center-ish preference with controlled randomness among top_k
+        if self.center_bias > 0:
+            k = min(self.top_k, len(ordered))
+            choice = self.rng.choice(ordered[:k])
+            self.last_info = {
+                "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
+                "nodes": nodes,
+                "depth": 1,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "top_k": self.top_k,
+                "win_policy": self.win_policy,
+                "block_policy": self.block_policy,
+                "scan_limit": self.scan_limit,
+                "note": "center",
             }
             return choice
 
@@ -99,5 +162,12 @@ class TacticalAgent:
             "time_ms": max(1, int((time.perf_counter() - t0) * 1000)),
             "nodes": nodes,
             "depth": 1,
+            "seed": self.seed,
+            "center_bias": self.center_bias,
+            "top_k": self.top_k,
+            "win_policy": self.win_policy,
+            "block_policy": self.block_policy,
+            "scan_limit": self.scan_limit,
+            "note": "random",
         }
         return choice

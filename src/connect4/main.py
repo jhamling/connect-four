@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import random
@@ -22,12 +21,21 @@ def random_ai_agent():
     Keeps compute reasonable while still showcasing variety.
     """
     from connect4.ai.random_agent import RandomAgent
+    
     from connect4.ai.greedy_agent import GreedyAgent
+    from connect4.ai.tactical_agent import TacticalAgent 
     from connect4.ai.tactical_greedy_agent import TacticalGreedyAgent
-    from connect4.ai.beam_agent import BeamSearchAgent
+
+    from connect4.ai.beam_agent import BeamAgent
+    from connect4.ai.beam2_agent import Beam2Agent 
+   
     from connect4.ai.minimax_agent import MinimaxAgent
     from connect4.ai.expectiminimax_agent import ExpectiMiniMaxAgent
-
+    
+    from connect4.ai.weighted_random_agent import WeightedRandomAgent 
+    
+    from connect4.ai.heuristic_agent import HeuristicAgent
+    
     factories = [
         # Pure random baseline
         lambda: RandomAgent(),
@@ -38,6 +46,13 @@ def random_ai_agent():
             temperature=random.choice([0, 25, 75]),
             time_limit_sec=0.0,
         ),
+
+        # WIP
+        lambda: TacticalAgent(
+
+            ),
+
+
         lambda: TacticalGreedyAgent(
             name=f"TacticalGreedy (temp {random.choice([0, 25, 75])})",
             temperature=random.choice([0, 25, 75]),
@@ -45,12 +60,17 @@ def random_ai_agent():
         ),
 
         # Beam search (varied width/depth/time)
-        lambda: BeamSearchAgent(
+        lambda: BeamAgent (
             name="BeamSearch",
             depth=random.choice([5, 7, 9]),
             width=random.choice([2, 3, 4]),
             time_limit_sec=random.choice([0.10, 0.20, 0.35]),
             temperature=random.choice([0, 25, 75]),
+        ),
+
+        # WIP
+        lambda: Beam2Agent(
+        
         ),
 
         # Minimax (varied depth/time/temp)
@@ -67,6 +87,16 @@ def random_ai_agent():
             depth=random.choice([5, 7, 9]),
             time_limit_sec=random.choice([0.15, 0.25, 0.40]),
             p_best=random.choice([0.60, 0.80, 0.95]),
+        ),
+
+        # WIP
+        lambda: WeightedRandomAgent(
+
+        ),
+        
+        # WIP
+        lambda: HeuristicAgent(
+
         ),
     ]
 

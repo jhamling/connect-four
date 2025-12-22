@@ -1,6 +1,3 @@
-
-# src/connect4/ai/minimax_agent.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

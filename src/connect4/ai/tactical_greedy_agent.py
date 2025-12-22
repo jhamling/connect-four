@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,16 +19,68 @@ def _other(p: Player) -> Player:
 class TacticalGreedyAgent:
     """
     Tactical rules + greedy fallback.
-    Knobs:
-      - temperature: applies to greedy fallback and (when multiple) blocks/wins selection
-      - time_limit_sec: optional budget for scanning/evaluating moves
+
+    Tunable knobs (to generate many distinct variants):
+      - temperature:
+          Selection "slack" for greedy/block scoring. Higher => more random among near-best.
+      - time_limit_sec:
+          Optional time budget for scanning/evaluating moves.
+      - seed:
+          Deterministic RNG seed (important for reproducibility + multiprocessing).
+      - center_bias:
+          How strongly to prefer center columns when ordering moves.
+          0.0 = no center bias, higher = stronger center preference.
+      - block_policy:
+          How to pick among multiple blocking moves:
+            "random"     -> pick random among blocking moves
+            "center"     -> pick most-center block (ties random)
+            "evaluate"   -> evaluate each block and apply temperature threshold
+      - greedy_policy:
+          How to pick in greedy fallback:
+            "evaluate"   -> evaluate each move and apply temperature threshold
+            "center"     -> prefer center-most (still uses immediate win/block rules)
     """
-    name: str = "Tactical Greedy"
+    name: str = "TacticalGreedy"
     temperature: int = 0
     time_limit_sec: float = 0.0
-    rng: random.Random = field(default_factory=random.Random)
 
+    seed: int = 0
+    center_bias: float = 1.0
+    block_policy: str = "evaluate"   # "random" | "center" | "evaluate"
+    greedy_policy: str = "evaluate"  # "evaluate" | "center"
+
+    rng: random.Random = field(init=False)
     last_info: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.rng = random.Random(self.seed)
+
+        # normalize policies defensively
+        if self.block_policy not in ("random", "center", "evaluate"):
+            self.block_policy = "evaluate"
+        if self.greedy_policy not in ("evaluate", "center"):
+            self.greedy_policy = "evaluate"
+
+        if self.center_bias < 0:
+            self.center_bias = 0.0
+
+    def _deadline(self) -> float | None:
+        if self.time_limit_sec and self.time_limit_sec > 0:
+            return time.perf_counter() + float(self.time_limit_sec)
+        return None
+
+    def _time_left(self, deadline: float | None) -> bool:
+        return deadline is None or time.perf_counter() < deadline
+
+    def _sort_moves(self, moves: list[Move], cols: int) -> list[Move]:
+        if self.center_bias <= 0:
+            return moves[:]  # no ordering preference
+
+        center = cols // 2
+
+        # higher center_bias => stronger “center first” ordering
+        # (we keep it simple: scale the distance)
+        return sorted(moves, key=lambda m: abs(int(m) - center) * self.center_bias)
 
     def choose_move(self, state: GameState) -> Move:
         board = state.board
@@ -41,15 +92,14 @@ class TacticalGreedyAgent:
             raise ValueError("No valid moves.")
 
         start = time.perf_counter()
-        deadline = start + float(self.time_limit_sec) if self.time_limit_sec and self.time_limit_sec > 0 else None
+        deadline = self._deadline()
 
-        center = board.cols // 2
-        moves = sorted(moves, key=lambda m: abs(int(m) - center))
+        moves = self._sort_moves(moves, board.cols)
 
-        # 1) Immediate winning move(s)
+        # 1) Immediate winning moves
         winning: list[Move] = []
         for m in moves:
-            if deadline is not None and time.perf_counter() >= deadline:
+            if not self._time_left(deadline):
                 break
             board.drop(m, me)
             w = check_winner(board)
@@ -58,27 +108,27 @@ class TacticalGreedyAgent:
                 winning.append(m)
 
         if winning:
-            # If multiple wins exist, pick among them (temperature not needed here, but randomness is fine)
             chosen = self.rng.choice(winning)
             elapsed = time.perf_counter() - start
             self.last_info = {
                 "depth": 1,
                 "nodes": 0,
-                "tt_hits": 0,
-                "cutoffs": 0,
                 "eval": 1_000_000,
-                "move_col": int(chosen) + 1,
                 "time_ms": max(1, int(elapsed * 1000)),
                 "time_limit_ms": int(self.time_limit_sec * 1000),
                 "temperature": self.temperature,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "block_policy": self.block_policy,
+                "greedy_policy": self.greedy_policy,
                 "note": "immediate_win",
             }
             return chosen
 
-        # 2) Immediate block(s) (prevent opponent win next move)
+        # 2) Immediate blocks (prevent opponent win next move)
         blocks: list[Move] = []
         for m in moves:
-            if deadline is not None and time.perf_counter() >= deadline:
+            if not self._time_left(deadline):
                 break
             board.drop(m, opp)
             w = check_winner(board)
@@ -87,50 +137,82 @@ class TacticalGreedyAgent:
                 blocks.append(m)
 
         if blocks:
-            # If multiple blocks, optionally apply heuristic to pick "better" blocks using temperature
-            scored_blocks: list[tuple[Move, float]] = []
-            best = -inf
+            chosen: Move
             nodes = 0
-            for m in blocks:
-                if deadline is not None and time.perf_counter() >= deadline:
-                    break
-                board.drop(m, me)
-                s = float(evaluate(board, me))
-                board.undo(m)
-                nodes += 1
-                scored_blocks.append((m, s))
-                if s > best:
-                    best = s
+            best = -inf
 
-            if not scored_blocks:
+            if self.block_policy == "random":
                 chosen = self.rng.choice(blocks)
-            else:
-                threshold = best - float(self.temperature)
-                candidates = [m for (m, s) in scored_blocks if s >= threshold] or [m for (m, s) in scored_blocks if s == best]
+            elif self.block_policy == "center":
+                # blocks already center-sorted; pick among best-center ties
+                best_dist = abs(int(blocks[0]) - (board.cols // 2))
+                candidates = [m for m in blocks if abs(int(m) - (board.cols // 2)) == best_dist]
                 chosen = self.rng.choice(candidates)
+            else:
+                # "evaluate": score each blocking move using evaluate(board, me)
+                scored_blocks: list[tuple[Move, float]] = []
+                for m in blocks:
+                    if not self._time_left(deadline):
+                        break
+                    board.drop(m, me)
+                    s = float(evaluate(board, me))
+                    board.undo(m)
+                    nodes += 1
+                    scored_blocks.append((m, s))
+                    if s > best:
+                        best = s
+
+                if not scored_blocks:
+                    chosen = self.rng.choice(blocks)
+                else:
+                    threshold = best - float(self.temperature)
+                    candidates = [m for (m, s) in scored_blocks if s >= threshold]
+                    if not candidates:
+                        candidates = [m for (m, s) in scored_blocks if s == best] or [scored_blocks[0][0]]
+                    chosen = self.rng.choice(candidates)
 
             elapsed = time.perf_counter() - start
             self.last_info = {
                 "depth": 1,
                 "nodes": nodes,
-                "tt_hits": 0,
-                "cutoffs": 0,
                 "eval": int(best) if best not in (inf, -inf) else best,
-                "move_col": int(chosen) + 1,
-                "time_ms": int(elapsed * 1000),
+                "time_ms": max(1, int(elapsed * 1000)),
                 "time_limit_ms": int(self.time_limit_sec * 1000),
                 "temperature": self.temperature,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "block_policy": self.block_policy,
+                "greedy_policy": self.greedy_policy,
                 "note": "block",
             }
             return chosen
 
-        # 3) Greedy fallback (1-ply)
+        # 3) Greedy fallback
+        if self.greedy_policy == "center":
+            # already center-ordered; deterministic aside from RNG tie-break (not needed)
+            chosen = moves[0]
+            elapsed = time.perf_counter() - start
+            self.last_info = {
+                "depth": 1,
+                "nodes": 0,
+                "eval": 0,
+                "time_ms": max(1, int(elapsed * 1000)),
+                "time_limit_ms": int(self.time_limit_sec * 1000),
+                "temperature": self.temperature,
+                "seed": self.seed,
+                "center_bias": self.center_bias,
+                "block_policy": self.block_policy,
+                "greedy_policy": self.greedy_policy,
+                "note": "greedy_center",
+            }
+            return chosen
+
         best_score = -inf
         scored: list[tuple[Move, float]] = []
         nodes = 0
 
         for m in moves:
-            if deadline is not None and time.perf_counter() >= deadline:
+            if not self._time_left(deadline):
                 break
             board.drop(m, me)
             s = float(evaluate(board, me))
@@ -142,6 +224,7 @@ class TacticalGreedyAgent:
 
         if not scored:
             scored = [(moves[0], float(evaluate(board, me)))]
+            best_score = scored[0][1]
 
         threshold = best_score - float(self.temperature)
         candidates = [m for (m, s) in scored if s >= threshold]
@@ -154,13 +237,15 @@ class TacticalGreedyAgent:
         self.last_info = {
             "depth": 1,
             "nodes": nodes,
-            "tt_hits": 0,
-            "cutoffs": 0,
             "eval": int(best_score) if best_score not in (inf, -inf) else best_score,
-            "move_col": int(chosen) + 1,
-            "time_ms": int(elapsed * 1000),
+            "time_ms": max(1, int(elapsed * 1000)),
             "time_limit_ms": int(self.time_limit_sec * 1000),
             "temperature": self.temperature,
+            "seed": self.seed,
+            "center_bias": self.center_bias,
+            "block_policy": self.block_policy,
+            "greedy_policy": self.greedy_policy,
+            "note": "greedy_eval",
         }
         return chosen
 
