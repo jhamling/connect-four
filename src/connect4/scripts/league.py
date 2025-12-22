@@ -1,22 +1,28 @@
+
 from __future__ import annotations
 
+import math
+import os
+import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable, Dict, List, Tuple
 
+from connect4.ai.tt import TranspositionTable
 from connect4.core.board import Board
 from connect4.core.rules import check_winner, is_draw
 from connect4.game.state import GameState
 
-from connect4.ai.tt import TranspositionTable
 
 def other(p: str) -> str:
     return "O" if p == "X" else "X"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Team:
     name: str
-    make: Callable[[], object]
+    make: Callable[[], object]  # must be picklable (use functools.partial, not lambda)
 
 
 @dataclass
@@ -44,25 +50,23 @@ def play_headless(agent_x, agent_o, seed_base: int = 0) -> Tuple[str, Dict[str, 
     Returns outcome: "X", "O", or "D"
     Also returns per-side move stats: {"X": {...}, "O": {...}}
     """
-    import random
-
     state = GameState(board=Board(), current="X", last_status="")
     stats = {
         "X": {"moves": 0, "time_ms": 0, "nodes": 0, "depth": 0},
         "O": {"moves": 0, "time_ms": 0, "nodes": 0, "depth": 0},
     }
 
-    # seed both agents deterministically per game for variety + reproducibility
+    # deterministic seeds per game for reproducibility
     _seed(agent_x, seed_base + 101)
     _seed(agent_o, seed_base + 202)
 
-    # Reset transposition tables once per game
+    # reset TT once per game (only if agent uses it)
     if hasattr(agent_x, "tt"):
         agent_x.tt = TranspositionTable()
     if hasattr(agent_o, "tt"):
         agent_o.tt = TranspositionTable()
 
-    # ---------- OPENING RANDOMIZATION (2 plies) ----------
+    # --- opening randomization (2 plies) ---
     rng = random.Random(seed_base)
     for _ in range(2):
         moves = state.board.valid_moves()
@@ -71,7 +75,7 @@ def play_headless(agent_x, agent_o, seed_base: int = 0) -> Tuple[str, Dict[str, 
         move = rng.choice(moves)
         state.board.drop(move, state.current)
         state.current = other(state.current)
-    # ----------------------------------------------------
+    # --------------------------------------
 
     while True:
         w = check_winner(state.board)
@@ -86,17 +90,20 @@ def play_headless(agent_x, agent_o, seed_base: int = 0) -> Tuple[str, Dict[str, 
         info = getattr(agent, "last_info", None) or {}
         side_stats = stats[state.current]
         side_stats["moves"] += 1
+
         ms = int(info.get("time_ms", 0))
         side_stats["time_ms"] += max(1, ms)
+
         side_stats["nodes"] += int(info.get("nodes", 0))
         side_stats["depth"] += int(info.get("depth", 0))
+
         state.board.drop(move, state.current)
         state.current = other(state.current)
 
 
 def add_result(agg_a: Agg, agg_b: Agg, outcome: str, a_is_x: bool) -> None:
     """
-    outcome is relative to X/O for the game.
+    outcome is "X", "O", or "D" for the game.
     a_is_x says whether team A played as X.
     """
     agg_a.games += 1
@@ -109,7 +116,6 @@ def add_result(agg_a: Agg, agg_b: Agg, outcome: str, a_is_x: bool) -> None:
         agg_b.points += 0.5
         return
 
-    # map X/O winner to A/B winner
     a_won = (outcome == "X" and a_is_x) or (outcome == "O" and not a_is_x)
     if a_won:
         agg_a.wins += 1
@@ -120,9 +126,48 @@ def add_result(agg_a: Agg, agg_b: Agg, outcome: str, a_is_x: bool) -> None:
         agg_a.losses += 1
         agg_b.points += 1.0
 
-import math
-import random
 
+# -----------------------------
+# Multiprocessing: batched worker
+# -----------------------------
+def _run_pairings_batch(args):
+    """
+    Execute a batch of pairings in one process to reduce IPC/submit overhead.
+
+    args = (
+      batch_items,
+      games_per_pair
+    )
+
+    batch_items is list of tuples:
+      (A_name, B_name, A_make, B_make, base_seed)
+
+    Returns:
+      list of tuples:
+        (A_name, B_name, a_is_x, outcome, stats)
+    """
+    (batch_items, games_per_pair) = args
+    out = []
+
+    for (A_name, B_name, A_make, B_make, base_seed) in batch_items:
+        for g in range(games_per_pair):
+            if g % 2 == 0:
+                ax = A_make()
+                bo = B_make()
+                outcome, stats = play_headless(ax, bo, seed_base=(base_seed + g))
+                out.append((A_name, B_name, True, outcome, stats))   # A is X
+            else:
+                bx = B_make()
+                ao = A_make()
+                outcome, stats = play_headless(bx, ao, seed_base=(base_seed + g))
+                out.append((A_name, B_name, False, outcome, stats))  # A is O
+
+    return out
+
+
+def _chunked(lst, size: int):
+    for i in range(0, len(lst), size):
+        yield lst[i : i + size]
 
 
 def league_auto_prune(
@@ -133,15 +178,28 @@ def league_auto_prune(
     keep_fraction: float = 0.50,
     final_keep: int = 30,
     seed: int = 1234,
+    max_workers: int | None = None,
+    batch_pairings: int = 12,         # tune: 8..32
+    max_stages: int | None = None,    # None = no cap
+    prune_z: float = 1.28,            # stability penalty (LCB)
+    ms_target: float = 50.0,          # soft compute penalty scale
 ) -> None:
     """
-    Auto-pruning league.
+    Auto-pruning league with:
+      - One persistent ProcessPool
+      - Batched pairings per task (lower overhead)
+      - Parallel staged execution AND parallel final round-robin
 
-    Staged random pairings with pruning.
-    Stops when:
-      - roster <= final_keep
-      - pruning no longer reduces roster
-      - max stages reached
+    PRUNING METRIC: "all-around best agent"
+      score = ppg_lcb / (1 + avg_ms_per_move / ms_target)
+
+    where:
+      ppg_lcb = ppg - Z * sqrt(ppg*(1-ppg)/games)
+
+    This favors:
+      - strong win rate (ppg)
+      - stability (LCB penalizes small-sample luck)
+      - reasonable compute (soft penalty, not dominated by speed)
     """
     rng = random.Random(seed)
 
@@ -157,14 +215,29 @@ def league_auto_prune(
         ms = avg_ms_per_move(a)
         return (points_per_game(a) / ms) if ms > 0 else 0.0
 
+    def ppg_lcb(a: Agg) -> float:
+        if a.games <= 0:
+            return 0.0
+        ppg = points_per_game(a)
+        se = math.sqrt(max(1e-9, ppg * (1.0 - ppg)) / a.games)
+        return max(0.0, ppg - prune_z * se)
+
+    def all_around_score(a: Agg) -> float:
+        ms = avg_ms_per_move(a)
+        if ms <= 0:
+            ms = 1.0
+        return ppg_lcb(a) / (1.0 + (ms / ms_target))
+
     def print_table(title: str, roster: List[Team], top_n: int = 20) -> None:
         print(f"\n=== {title} ===")
-        rows = sorted(roster, key=lambda t: points_per_game(agg[t.name]), reverse=True)
+        rows = sorted(roster, key=lambda t: all_around_score(agg[t.name]), reverse=True)
         for rank, t in enumerate(rows[:top_n], start=1):
             a = agg[t.name]
             print(
                 f"{rank:>2}. {t.name:<32} "
+                f"score={all_around_score(a):.6f}  "
                 f"ppg={points_per_game(a):.3f}  "
+                f"lcb={ppg_lcb(a):.3f}  "
                 f"W-D-L={a.wins}-{a.draws}-{a.losses}  "
                 f"g={a.games:<4}  "
                 f"avg_ms/move={avg_ms_per_move(a):.1f}  "
@@ -213,211 +286,150 @@ def league_auto_prune(
 
         return matches
 
-    def play_match(A: Team, B: Team, base_seed: int) -> None:
-        for g in range(games_per_pair):
-            if g % 2 == 0:
-                ax = A.make()
-                bo = B.make()
-                outcome, stats = play_headless(ax, bo, seed_base=(base_seed + g))
-                add_result(agg[A.name], agg[B.name], outcome, a_is_x=True)
+    def _apply_game_result(A_name: str, B_name: str, a_is_x: bool, outcome: str, stats: Dict[str, Dict[str, int]]):
+        add_result(agg[A_name], agg[B_name], outcome, a_is_x=a_is_x)
 
-                agg[A.name].moves += stats["X"]["moves"]
-                agg[A.name].time_ms += stats["X"]["time_ms"]
-                agg[A.name].nodes += stats["X"]["nodes"]
-                agg[A.name].depth_sum += stats["X"]["depth"]
+        if a_is_x:
+            # A is X, B is O
+            agg[A_name].moves += stats["X"]["moves"]
+            agg[A_name].time_ms += stats["X"]["time_ms"]
+            agg[A_name].nodes += stats["X"]["nodes"]
+            agg[A_name].depth_sum += stats["X"]["depth"]
 
-                agg[B.name].moves += stats["O"]["moves"]
-                agg[B.name].time_ms += stats["O"]["time_ms"]
-                agg[B.name].nodes += stats["O"]["nodes"]
-                agg[B.name].depth_sum += stats["O"]["depth"]
-            else:
-                bx = B.make()
-                ao = A.make()
-                outcome, stats = play_headless(bx, ao, seed_base=(base_seed + g))
-                add_result(agg[A.name], agg[B.name], outcome, a_is_x=False)
+            agg[B_name].moves += stats["O"]["moves"]
+            agg[B_name].time_ms += stats["O"]["time_ms"]
+            agg[B_name].nodes += stats["O"]["nodes"]
+            agg[B_name].depth_sum += stats["O"]["depth"]
+        else:
+            # B is X, A is O
+            agg[B_name].moves += stats["X"]["moves"]
+            agg[B_name].time_ms += stats["X"]["time_ms"]
+            agg[B_name].nodes += stats["X"]["nodes"]
+            agg[B_name].depth_sum += stats["X"]["depth"]
 
-                agg[B.name].moves += stats["X"]["moves"]
-                agg[B.name].time_ms += stats["X"]["time_ms"]
-                agg[B.name].nodes += stats["X"]["nodes"]
-                agg[B.name].depth_sum += stats["X"]["depth"]
+            agg[A_name].moves += stats["O"]["moves"]
+            agg[A_name].time_ms += stats["O"]["time_ms"]
+            agg[A_name].nodes += stats["O"]["nodes"]
+            agg[A_name].depth_sum += stats["O"]["depth"]
 
-                agg[A.name].moves += stats["O"]["moves"]
-                agg[A.name].time_ms += stats["O"]["time_ms"]
-                agg[A.name].nodes += stats["O"]["nodes"]
-                agg[A.name].depth_sum += stats["O"]["depth"]
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 2, 6)
 
     roster = teams[:]
     stage = 1
-    MAX_STAGES = 3   # 🔒 safety cap (raise later for real runs)
 
     print(f"Initial roster: {len(roster)} teams")
     print(
         f"Stage settings: pairings/team={stage_pairings_per_team}, "
         f"games/pair={games_per_pair}, keep_fraction={keep_fraction}, "
-        f"final_keep={final_keep}"
+        f"final_keep={final_keep}, workers={max_workers}, batch_pairings={batch_pairings}"
     )
+    print(f"Prune metric: Z={prune_z}, ms_target={ms_target}  (score = LCB(ppg) / (1 + ms/ms_target))")
 
-    while len(roster) > final_keep:
-        if stage > MAX_STAGES:
-            print(f"Reached max stages ({MAX_STAGES}) — stopping early.")
-            break
-
-        print(f"\n--- STAGE {stage} (roster={len(roster)}) ---")
-        matches = schedule_stage(roster)
-        print(f"Stage {stage}: scheduled {len(matches)} pairings")
-
-        for idx, (A, B) in enumerate(matches, start=1):
-            base_seed = seed + stage * 1_000_000 + idx * 10_000
-            play_match(A, B, base_seed=base_seed)
-
-        print_table(f"After Stage {stage} (Top 20)", roster, top_n=20)
-
-        if all(agg[t.name].games >= min_games_before_prune for t in roster):
-            by_ppg = sorted(roster, key=lambda t: points_per_game(agg[t.name]), reverse=True)
-
-            keep_n = max(final_keep, int(math.ceil(len(roster) * keep_fraction)))
-            keep_n = min(keep_n, len(roster))
-
-            new_roster = by_ppg[:keep_n]
-
-            if len(new_roster) == len(roster):
-                print("No pruning occurred — stopping early.")
-                roster = new_roster
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        # ---------- STAGED PRUNING ----------
+        while len(roster) > final_keep:
+            if max_stages is not None and stage > max_stages:
+                print(f"Reached max stages ({max_stages}) — stopping early.")
                 break
 
-            roster = new_roster
-            print(f"Pruned to {len(roster)} teams (kept top {keep_n} by ppg)")
-        else:
-            min_g = min(agg[t.name].games for t in roster)
-            print(
-                f"Not pruning yet: minimum games/team = {min_g}, "
-                f"need >= {min_games_before_prune}"
-            )
+            print(f"\n--- STAGE {stage} (roster={len(roster)}) ---")
+            matches = schedule_stage(roster)
+            print(f"Stage {stage}: scheduled {len(matches)} pairings")
 
-        stage += 1
+            batch_items = []
+            for idx, (A, B) in enumerate(matches, start=1):
+                base_seed = seed + stage * 1_000_000 + idx * 10_000
+                batch_items.append((A.name, B.name, A.make, B.make, base_seed))
 
-        if len(roster) < 2:
-            break
+            futures = []
+            for chunk in _chunked(batch_items, batch_pairings):
+                futures.append(ex.submit(_run_pairings_batch, (chunk, games_per_pair)))
 
-    print(f"\n=== FINAL ROUND-ROBIN (roster={len(roster)}) ===")
-    league(roster, games_per_pair=games_per_pair)
+            for fut in as_completed(futures):
+                results = fut.result()
+                for (A_name, B_name, a_is_x, outcome, stats) in results:
+                    _apply_game_result(A_name, B_name, a_is_x, outcome, stats)
 
-    print("\n=== FINAL (Efficiency among survivors) ===")
-    by_eff = sorted(roster, key=lambda t: efficiency(agg[t.name]), reverse=True)
-    for rank, t in enumerate(by_eff, start=1):
-        a = agg[t.name]
+            print_table(f"After Stage {stage} (Top 20 by all-around score)", roster, top_n=20)
+
+            # prune if enough data
+            if all(agg[t.name].games >= min_games_before_prune for t in roster):
+                keep_n = max(final_keep, int(math.ceil(len(roster) * keep_fraction)))
+                keep_n = min(keep_n, len(roster))
+
+                by_score = sorted(roster, key=lambda t: all_around_score(agg[t.name]), reverse=True)
+                new_roster = by_score[:keep_n]
+
+                if len(new_roster) == len(roster):
+                    print("No pruning occurred — stopping early.")
+                    roster = new_roster
+                    break
+
+                roster = new_roster
+                print(f"Pruned to {len(roster)} teams (kept top {keep_n} by all-around score)")
+            else:
+                min_g = min(agg[t.name].games for t in roster)
+                print(f"Not pruning yet: minimum games/team = {min_g}, need >= {min_games_before_prune}")
+
+            stage += 1
+            if len(roster) < 2:
+                break
+
+        # ---------- FINAL ROUND-ROBIN (PARALLEL) ----------
+        print(f"\n=== FINAL ROUND-ROBIN (roster={len(roster)}) ===")
+
+        pair_items = []
+        n = len(roster)
+        for i in range(n):
+            for j in range(i + 1, n):
+                A = roster[i]
+                B = roster[j]
+                base_seed = seed + 9_000_000 + i * 10_000 + j * 100
+                pair_items.append((A.name, B.name, A.make, B.make, base_seed))
+
+        final_futures = []
+        for chunk in _chunked(pair_items, batch_pairings):
+            final_futures.append(ex.submit(_run_pairings_batch, (chunk, games_per_pair)))
+
+        for fut in as_completed(final_futures):
+            results = fut.result()
+            for (A_name, B_name, a_is_x, outcome, stats) in results:
+                _apply_game_result(A_name, B_name, a_is_x, outcome, stats)
+
+        # Winner: single best "all-around" agent among final survivors
+        winner = max(roster, key=lambda t: all_around_score(agg[t.name]))
+        a = agg[winner.name]
+
+        print("\n=== WINNER (All-around best agent) ===")
         print(
-            f"{rank:>2}. {t.name:<32} "
-            f"eff={efficiency(a):.6f}  "
-            f"ppg={points_per_game(a):.3f}  "
-            f"avg_ms/move={avg_ms_per_move(a):.1f}  "
-            f"g={a.games}"
-        )
-
-def league(teams: List[Team], games_per_pair: int = 6) -> None:
-    agg: Dict[str, Agg] = {t.name: Agg() for t in teams}
-
-    n = len(teams)
-    for i in range(n):
-        for j in range(i + 1, n):
-            A = teams[i]
-            B = teams[j]
-
-            print(f"\n=== {A.name} vs {B.name} ({games_per_pair} games) ===")
-
-            for g in range(games_per_pair):
-                # alternate which team is X each game to reduce first-move bias
-                if g % 2 == 0:
-                    ax = A.make()
-                    bo = B.make()
-                    outcome, stats = play_headless(ax, bo, seed_base=(i * 10_000 + j * 100 + g))
-                    add_result(agg[A.name], agg[B.name], outcome, a_is_x=True)
-
-                    agg[A.name].moves += stats["X"]["moves"]
-                    agg[A.name].time_ms += stats["X"]["time_ms"]
-                    agg[A.name].nodes += stats["X"]["nodes"]
-                    agg[A.name].depth_sum += stats["X"]["depth"]
-
-                    agg[B.name].moves += stats["O"]["moves"]
-                    agg[B.name].time_ms += stats["O"]["time_ms"]
-                    agg[B.name].nodes += stats["O"]["nodes"]
-                    agg[B.name].depth_sum += stats["O"]["depth"]
-                else:
-                    bx = B.make()
-                    ao = A.make()
-                    outcome, stats = play_headless(bx, ao, seed_base=(j * 10_000 + i * 100 + g))
-                    add_result(agg[A.name], agg[B.name], outcome, a_is_x=False)
-
-                    agg[B.name].moves += stats["X"]["moves"]
-                    agg[B.name].time_ms += stats["X"]["time_ms"]
-                    agg[B.name].nodes += stats["X"]["nodes"]
-                    agg[B.name].depth_sum += stats["X"]["depth"]
-
-                    agg[A.name].moves += stats["O"]["moves"]
-                    agg[A.name].time_ms += stats["O"]["time_ms"]
-                    agg[A.name].nodes += stats["O"]["nodes"]
-                    agg[A.name].depth_sum += stats["O"]["depth"]
-
-            print(f"Completed: {A.name} vs {B.name}")
-
-    def points_per_game(a: Agg) -> float:
-        return (a.points / a.games) if a.games else 0.0
-
-    def avg_ms_per_move(a: Agg) -> float:
-        return (a.time_ms / a.moves) if a.moves else 0.0
-
-    def efficiency(a: Agg) -> float:
-        # strength per compute
-        ms = avg_ms_per_move(a)
-        return (points_per_game(a) / ms) if ms > 0 else 0.0
-
-    print("\n=== STANDINGS (Strength: points/game) ===")
-    by_strength = sorted(agg.items(), key=lambda kv: points_per_game(kv[1]), reverse=True)
-    for rank, (name, a) in enumerate(by_strength, start=1):
-        print(
-            f"{rank:>2}. {name:<28} "
-            f"ppg={points_per_game(a):.3f}  "
-            f"W-D-L={a.wins}-{a.draws}-{a.losses}  "
-            f"avg_ms/move={avg_ms_per_move(a):.1f}  "
-            f"avg_nodes/move={(a.nodes / a.moves) if a.moves else 0.0:.0f}  "
-            f"avg_depth={(a.depth_sum / a.moves) if a.moves else 0.0:.2f}"
-        )
-
-    print("\n=== STANDINGS (Efficiency: ppg / avg_ms_per_move) ===")
-    by_eff = sorted(agg.items(), key=lambda kv: efficiency(kv[1]), reverse=True)
-    for rank, (name, a) in enumerate(by_eff, start=1):
-        print(
-            f"{rank:>2}. {name:<28} "
-            f"eff={efficiency(a):.6f}  "
-            f"ppg={points_per_game(a):.3f}  "
-            f"avg_ms/move={avg_ms_per_move(a):.1f}"
+            f"{winner.name}\n"
+            f"  score={all_around_score(a):.6f}\n"
+            f"  ppg={points_per_game(a):.3f}  lcb={ppg_lcb(a):.3f}\n"
+            f"  W-D-L={a.wins}-{a.draws}-{a.losses}  games={a.games}\n"
+            f"  avg_ms/move={avg_ms_per_move(a):.1f}"
         )
 
 
 def build_roster() -> List[Team]:
-    from connect4.ai.random_agent import RandomAgent
     from connect4.ai.minimax_agent import MinimaxAgent
-    from connect4.ai.greedy_agent import GreedyAgent
-    from connect4.ai.tactical_greedy_agent import TacticalGreedyAgent
-    from connect4.ai.beam_agent import BeamSearchAgent
-    from connect4.ai.expectiminimax_agent import ExpectiMiniMaxAgent
+    from connect4.ai.random_agent import RandomAgent
 
-    teams: List[Team] = [Team("Random", lambda: RandomAgent())]
+    teams: List[Team] = [Team("Random", partial(RandomAgent))]
 
-    # Big roster generator:
     depths = [3, 5, 7, 9, 11]
-    times = [0.05, 0.10, 0.20, 0.35, 0.75]   # seconds (50ms..750ms)
-    temps = [0, 25, 75]                      # randomness: 0 deterministic, higher = more variety
+    times = [0.05, 0.10, 0.20, 0.35, 0.75]
+    temps = [0, 25, 75]
 
-    # Limit count if you want (this generates 5*5*3 = 75 minimax variants + Random)
     for d in depths:
         for t in times:
             for temp in temps:
-                name = f"MM d{d} t{int(t*1000)}ms temp{temp}"
+                name = f"MM d{d} t{int(t * 1000)}ms temp{temp}"
                 teams.append(
                     Team(
                         name,
-                        lambda d=d, t=t, temp=temp: MinimaxAgent(
+                        partial(
+                            MinimaxAgent,
                             name=name,
                             depth=d,
                             time_limit_sec=t,
@@ -429,14 +441,10 @@ def build_roster() -> List[Team]:
     return teams
 
 
-
-
-
 def main() -> None:
     roster = build_roster()
     print(f"Roster size: {len(roster)} teams")
 
-    # These prompts let you scale runtime without editing code
     gpp = input("Games per pairing (default 1): ").strip()
     games_per_pair = int(gpp) if gpp else 1
 
@@ -455,6 +463,21 @@ def main() -> None:
     sd = input("Seed (default 1234): ").strip()
     seed = int(sd) if sd else 1234
 
+    mw = input("Max workers (default = cpu cores, capped at 6): ").strip()
+    max_workers = int(mw) if mw else None
+
+    bp = input("Batch pairings per worker task (default 12): ").strip()
+    batch_pairings = int(bp) if bp else 12
+
+    ms = input("Max stages (blank = no cap, recommended 3 for testing): ").strip()
+    max_stages = int(ms) if ms else None
+
+    z = input("Prune Z (default 1.28): ").strip()
+    prune_z = float(z) if z else 1.28
+
+    mt = input("ms_target (default 50): ").strip()
+    ms_target = float(mt) if mt else 50.0
+
     league_auto_prune(
         roster,
         games_per_pair=games_per_pair,
@@ -463,10 +486,13 @@ def main() -> None:
         keep_fraction=keep_fraction,
         final_keep=final_keep,
         seed=seed,
+        max_workers=max_workers,
+        batch_pairings=batch_pairings,
+        max_stages=max_stages,
+        prune_z=prune_z,
+        ms_target=ms_target,
     )
 
 
 if __name__ == "__main__":
     main()
-
-
