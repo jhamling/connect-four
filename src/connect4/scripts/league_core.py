@@ -1,14 +1,17 @@
+
 from __future__ import annotations
 
 import csv
 import math
 import os
 import random
+import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, List
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Sequence
 
-from .league_format import A, hr
+from .league_format import A
 from .league_play import add_result, chunked, run_pairings_batch
 from .league_scoring import (
     avg_ms_per_move,
@@ -18,6 +21,55 @@ from .league_scoring import (
     strength_score,
 )
 from .league_types import Agg, Team
+
+
+# -----------------------------
+# Stable terminal formatting
+# -----------------------------
+def term_width(default: int = 120) -> int:
+    try:
+        return shutil.get_terminal_size(fallback=(default, 24)).columns
+    except Exception:
+        return default
+
+
+def hr(char: str = "─", width: int | None = None) -> str:
+    w = width or term_width()
+    return char * max(10, w)
+
+
+def clamp(s: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(s) <= width:
+        return s
+    if width <= 1:
+        return s[:width]
+    return s[: width - 1] + "…"
+
+
+@dataclass(frozen=True)
+class Col:
+    title: str
+    width: int
+    align: str = "left"  # "left" | "right"
+
+
+def _fmt_row(values: Sequence[str], cols: Sequence[Col]) -> str:
+    out: List[str] = []
+    for v, c in zip(values, cols):
+        s = clamp(str(v), c.width)
+        out.append(s.rjust(c.width) if c.align == "right" else s.ljust(c.width))
+    return "  ".join(out)
+
+
+def print_table(title: str, cols: Sequence[Col], rows: Iterable[Sequence[str]], *, width: int) -> None:
+    print(A.cyan(A.bold(title)))
+    print(A.dim(_fmt_row([c.title for c in cols], cols)))
+    print(A.dim(hr("─", width)))
+    for r in rows:
+        print(_fmt_row(r, cols))
+    print(A.dim(hr("─", width)))
 
 
 def league_auto_prune(
@@ -41,6 +93,7 @@ def league_auto_prune(
     agg: Dict[str, Agg] = {t.name: Agg() for t in teams}
 
     def print_tables(title: str, roster: List[Team], top_n: int = 20) -> None:
+        w = term_width(120)
         rows = [(t.name, agg[t.name]) for t in roster]
 
         def fmt_wdl(a: Agg) -> str:
@@ -54,41 +107,75 @@ def league_auto_prune(
         )
         frontier = pareto_frontier(rows, prune_z)
 
-        print("\n" + A.bold(f"=== {title} ==="))
-        print(A.dim(hr()))
+        # Allocate most remaining width to agent column.
+        # Columns: rk(3) + spaces + strength(10) + eff(10) + ppg(5) + g(3) + ms(7) + wdl(7)
+        fixed = 3 + 2 + 10 + 2 + 10 + 2 + 5 + 2 + 3 + 2 + 7 + 2 + 7
+        agent_w = max(18, min(60, w - fixed))
 
-        def _print_block(block_title: str, ranking: List[tuple[str, Agg]]) -> None:
-            print(A.cyan(A.bold(block_title)))
-            print(A.dim("rank  agent                             strength    eff_score   ppg    g    avg_ms/mv   W-D-L"))
+        cols = [
+            Col("rk", 3, "right"),
+            Col("agent", agent_w, "left"),
+            Col("strength", 10, "right"),
+            Col("eff", 10, "right"),
+            Col("ppg", 5, "right"),
+            Col("g", 3, "right"),
+            Col("ms/mv", 7, "right"),
+            Col("W-D-L", 7, "right"),
+        ]
+
+        def make_rows(ranking: List[tuple[str, Agg]]) -> List[List[str]]:
+            out: List[List[str]] = []
             for i, (name, a) in enumerate(ranking[:top_n], start=1):
                 s = strength_score(a, prune_z)
                 e = efficiency_score(a, prune_z, ms_target, speed_alpha, speed_min_factor)
                 p = ppg(a)
                 ms = avg_ms_per_move(a)
 
-                s_txt = A.magenta(f"{s:0.6f}")
-                e_txt = A.magenta(f"{e:0.6f}")
-                p_txt = A.green(f"{p:0.3f}") if p >= 0.75 else (A.yellow(f"{p:0.3f}") if p >= 0.5 else A.red(f"{p:0.3f}"))
-                wdl_txt = f"{A.green(str(a.wins))}-{A.yellow(str(a.draws))}-{A.red(str(a.losses))}"
+                # Color only the PPG text; keep widths stable (color codes don't change padding due to clamp first).
+                p_txt = f"{p:0.3f}"
+                if p >= 0.75:
+                    p_txt = A.green(p_txt)
+                elif p >= 0.5:
+                    p_txt = A.yellow(p_txt)
+                else:
+                    p_txt = A.red(p_txt)
 
-                print(
-                    f"{i:>4}  {name:<32} "
-                    f"{s_txt}  {e_txt}  {p_txt}  {a.games:>4}  {ms:>9.1f}  {wdl_txt}"
-                )
-            print(A.dim(hr()))
+                out.append([
+                    str(i),
+                    name,
+                    f"{s:0.6f}",
+                    f"{e:0.6f}",
+                    p_txt,
+                    str(a.games),
+                    f"{ms:0.1f}",
+                    fmt_wdl(a),
+                ])
+            return out
 
-        _print_block("Top by Strength (speed ignored)", by_strength)
-        _print_block("Top by Efficiency (strength with capped speed factor)", by_eff)
+        print("\n" + A.bold(f"=== {title} ==="))
+        print(A.dim(hr("═", w)))
 
-        print(A.cyan(A.bold("Pareto Frontier (no agent is both stronger and faster)")))
-        print(A.dim("agent                             strength    avg_ms/mv   ppg    g    W-D-L"))
+        print_table("Top by Strength (speed ignored)", cols, make_rows(by_strength), width=w)
+        print_table("Top by Efficiency (capped speed factor)", cols, make_rows(by_eff), width=w)
+
+        # Pareto frontier: fewer columns, same stable formatting
+        f_cols = [
+            Col("agent", agent_w, "left"),
+            Col("strength", 10, "right"),
+            Col("ms/mv", 7, "right"),
+            Col("ppg", 5, "right"),
+            Col("g", 3, "right"),
+            Col("W-D-L", 7, "right"),
+        ]
+
+        f_rows: List[List[str]] = []
         for (name, a) in frontier[:top_n]:
             s = strength_score(a, prune_z)
             ms = avg_ms_per_move(a)
             p = ppg(a)
-            wdl_txt = f"{A.green(str(a.wins))}-{A.yellow(str(a.draws))}-{A.red(str(a.losses))}"
-            print(f"{name:<32} {A.magenta(f'{s:0.6f}')}  {ms:>9.1f}  {p:0.3f}  {a.games:>4}  {wdl_txt}")
-        print(A.dim(hr()))
+            f_rows.append([name, f"{s:0.6f}", f"{ms:0.1f}", f"{p:0.3f}", str(a.games), fmt_wdl(a)])
+
+        print_table("Pareto Frontier (no agent is both stronger and faster)", f_cols, f_rows, width=w)
 
     def schedule_stage(roster: List[Team]) -> List[tuple[Team, Team]]:
         if len(roster) < 2:
@@ -162,8 +249,9 @@ def league_auto_prune(
     roster = teams[:]
     stage = 1
 
+    w = term_width(120)
     print(A.bold(f"Initial roster: {len(roster)} teams"))
-    print(A.dim(hr()))
+    print(A.dim(hr("═", w)))
     print(
         f"Stage settings: pairings/team={stage_pairings_per_team}, games/pair={games_per_pair}, "
         f"keep_fraction={keep_fraction}, final_keep={final_keep}, workers={max_workers}, batch_pairings={batch_pairings}"
@@ -174,7 +262,7 @@ def league_auto_prune(
         f"  Efficiency = Strength * max({speed_min_factor}, 1/(1+alpha*sqrt(ms/ms_target)))  "
         f"(alpha={speed_alpha}, ms_target={ms_target})"
     )
-    print(A.dim(hr()))
+    print(A.dim(hr("═", w)))
 
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
         while len(roster) > final_keep:
@@ -229,6 +317,7 @@ def league_auto_prune(
                 break
 
         print("\n" + A.bold(f"=== FINAL ROUND-ROBIN (roster={len(roster)}) ==="))
+        print(A.dim(hr("═", term_width(120))))
 
         pair_items = []
         n = len(roster)
@@ -256,8 +345,9 @@ def league_auto_prune(
 
         def print_winner(title: str, team: Team) -> None:
             a = agg[team.name]
+            w = term_width(120)
             print("\n" + A.bold(title))
-            print(A.dim(hr()))
+            print(A.dim(hr("═", w)))
             print(team.name)
             print(
                 f"  strength={strength_score(a, prune_z):.6f}  "
@@ -274,7 +364,7 @@ def league_auto_prune(
         if export_csv:
             ts = time.strftime("%Y%m%d_%H%M%S")
             out_path = f"league_results_{ts}.csv"
-            rows = [(t.name, agg[t.name]) for t in teams]
+            all_rows = [(t.name, agg[t.name]) for t in teams]
 
             with open(out_path, "w", newline="") as f:
                 w = csv.writer(f)
@@ -287,7 +377,7 @@ def league_auto_prune(
                     "efficiency_score",
                     "moves", "time_ms", "nodes", "avg_depth",
                 ])
-                for name, a in rows:
+                for name, a in all_rows:
                     p = ppg(a)
                     s = strength_score(a, prune_z)
                     ms = avg_ms_per_move(a)
@@ -304,5 +394,5 @@ def league_auto_prune(
                     ])
 
             print("\n" + A.bold("Export"))
-            print(A.dim(hr()))
+            print(A.dim(hr("═", term_width(120))))
             print(f"Wrote CSV: {out_path}")
