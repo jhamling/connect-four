@@ -1,0 +1,49 @@
+
+# --------------------
+# Python artifacts
+# --------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --------------------
+# Virtual environments
+# --------------------
+.venv/
+venv/
+ENV/
+env/
+
+# --------------------
+# Packaging / build
+# --------------------
+build/
+dist/
+*.egg-info/
+
+# --------------------
+# Test / coverage
+# --------------------
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --------------------
+# Editor / OS junk
+# --------------------
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# --------------------
+# Logs / runtime
+# --------------------
+*.log
+
+# --------------------
+# Optional: local configs
+# --------------------
+.env
