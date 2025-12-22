@@ -16,3 +16,7 @@ AI_THINK_DELAY_SEC = 1  # short pause so AI moves aren’t instant
 
 # AI defaults (we will use later for minimax)
 MINIMAX_DEPTH = 5
+
+AI_TIME_LIMIT_SEC = 0.75
+SHOW_AI_STATS = True
+
