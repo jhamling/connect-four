@@ -1,4 +1,7 @@
-from connect4.main import main
+from __future__ import annotations
+
+from connect4.ui.menu import run_menu
 
 if __name__ == "__main__":
-    main()
+    run_menu()
+
