@@ -1,146 +1,159 @@
-Connect Four AI League & Tournament System
+# ♟️ Connect Four AI League & Tournament System
 
-A high-performance Connect Four AI framework featuring dozens of agent architectures, an auto-pruning league tournament, statistically grounded scoring, and reproducible benchmarking. Designed for experimentation, research, and eventual web visualization.
+A **high-performance Connect Four AI framework** built for **experimentation, benchmarking, and research**.  
+This project evaluates *dozens to hundreds* of AI agents under statistically grounded tournament conditions, with a clear separation between **strategic strength** and **computational efficiency**.
 
-Features
-🎮 Game Engine
+> This is not just a game — it’s an **AI evaluation system**.
 
-Full Connect Four ruleset
+---
 
-Headless game loop for fast simulation
+## 🚀 Highlights
 
-Deterministic seeding for reproducibility
+- ⚙️ Fast, headless simulation engine
+- 🤖 Dozens of AI architectures with parameterized variants
+- 📉 Auto-pruning league tournament (scales to hundreds of agents)
+- 📊 Statistically robust scoring (Wilson confidence bounds)
+- ⚖️ Explicit strength vs. speed tradeoff analysis
+- 📦 Reproducible runs with deterministic seeding
+- 🌐 Designed for future web visualization
 
-Opening randomization to avoid trivial openings
+---
 
-🤖 AI Agents
+## 🎮 Game Engine
 
-Implemented agents include:
+- Full **Connect Four ruleset**
+- Headless game loop for maximum throughput
+- Deterministic RNG seeding for reproducibility
+- Opening randomization to avoid trivial or solved openings
 
-Random / WeightedRandom
+---
 
-Greedy
+## 🤖 AI Agents
 
-TacticalGreedy
+Implemented agent families:
 
-Heuristic
+- `Random`, `WeightedRandom`
+- `Greedy`
+- `TacticalGreedy`
+- `Heuristic`
+- `Minimax`
+- `Expectiminimax`
+- `Beam Search`
+- `Beam Search v2` (shaping + move ordering)
+- `Monte Carlo Tree Search (MCTS)`
 
-Minimax
+Each agent supports **parameterized variants**:
+- Search depth
+- Temperature
+- Time limits
+- Exploration constants
+- Heuristic weights
 
-Expectiminimax
+➡️ A single league run can easily include **hundreds of unique agents**.
 
-Beam Search
+---
 
-Beam Search v2 (with shaping + ordering)
+## 🏆 League Tournament System  
+### Auto-Pruning Tournament
 
-MCTS
+Instead of an infeasible full round-robin, agents compete in **staged tournaments**:
 
-Each agent supports multiple parameterized variants (depth, temperature, time limits, exploration constants, etc.), resulting in hundreds of competing agents per league run.
+1. Large initial agent pool  
+2. Randomized pairings per stage  
+3. Statistical evaluation after each stage  
+4. Automatic pruning of weaker agents  
+5. Final round-robin among top performers  
 
-League Tournament System
-Auto-Pruning Tournament
+✅ Keeps runtime tractable  
+✅ Preserves competitive accuracy  
+✅ Avoids early noise dominating results  
 
-Instead of a single massive round-robin, agents compete in staged tournaments:
+---
 
-Large initial roster
+## 📐 Scoring & Metrics
 
-Randomized pairings per stage
+The system **explicitly separates strength from speed**.
 
-Statistical evaluation
+---
 
-Automatic pruning of weaker agents
+### 💪 Strength (Primary Metric)
 
-Final round-robin among top performers
-
-This keeps runs tractable while preserving competitive accuracy.
-
-Scoring & Metrics
-
-The system intentionally separates strength from speed.
-
-Strength (Primary Skill Metric)
-
-Uses a Wilson Lower Confidence Bound (LCB) over points-per-game:
+Computed using a **Wilson Lower Confidence Bound (LCB)** over points-per-game:
 
 Strength = WilsonLCB(PPG, z)
 
 
-Why:
+**Why Wilson LCB?**
+- Penalizes lucky short runs
+- Rewards consistency
+- Statistically conservative
+- Resistant to variance
 
-Penalizes lucky short runs
+---
 
-Rewards consistency
+### ⚡ Efficiency (Strength × Speed)
 
-Statistically robust
+To avoid rewarding only trivial fast agents:
 
-Efficiency (Strength + Speed)
-
-A soft speed penalty is applied to avoid rewarding only trivial fast agents:
-
-Efficiency = Strength × max(
-    speed_min_factor,
-    1 / (1 + speed_alpha × sqrt(ms_per_move / ms_target))
+Efficiency =
+Strength × max(
+speed_min_factor,
+1 / (1 + speed_alpha × sqrt(ms_per_move / ms_target))
 )
 
 
-Key properties:
+**Key properties**
+- Fast agents are rewarded
+- Slow but strong agents remain competitive
+- Prevents “Greedy always wins” artifacts
+- Makes compute-efficiency visible
 
-Fast agents get rewarded
+---
 
-Slow but strong agents are not unfairly crushed
+### 📊 Additional Tracked Stats
 
-Prevents “Greedy always wins” artifacts
+- Wins / Draws / Losses
+- Games played
+- Average milliseconds per move
+- Node expansions
+- Search depth
+- Pareto frontier (strength vs. speed)
 
-Additional Tracked Stats
+---
 
-Wins / Draws / Losses
-
-Games played
-
-Average milliseconds per move
-
-Node counts
-
-Search depth
-
-Pareto frontier (strength vs speed)
-
-CLI Usage
+## 🧪 CLI Usage
 
 Run the project:
 
+```bash
 python -m connect4
-
 
 Select:
 
-3) Run AI League (auto-prune tournament)
-
+Run AI League (auto-prune tournament)
 
 You’ll be prompted for:
 
-Games per pairing
+    Games per pairing
 
-Pairings per team per stage
+    Pairings per team per stage
 
-Minimum games before pruning
+    Minimum games before pruning
 
-Keep fraction
+    Keep fraction
 
-Final survivor count
+    Final survivor count
 
-Wilson Z value
+    Wilson Z value
 
-Speed penalty parameters
+    Speed penalty parameters
 
-Parallel worker count
+    Parallel worker count
 
-Defaults are provided for quick testing.
+✔️ Sensible defaults are provided for quick testing.
+🧠 Recommended Final Run Settings
 
-Recommended Final Run Settings (Conclusive Data)
-
-For a research-grade run:
-
+(Research-grade / conclusive data)
 Setting	Value
 Games per pairing	4
 Pairings per team per stage	12
@@ -148,82 +161,96 @@ Min games before prune	48
 Keep fraction	0.50
 Final keep	50
 Max stages	5–6
-Z (Wilson LCB)	1.96
+Wilson Z	1.96
 ms_target	50
 speed_alpha	0.35
 speed_min_factor	0.75
 Workers	6
 Batch size	16
 
-Expect runtime: hours, not minutes.
-
-Output
+⏱️ Expected runtime: hours, not minutes.
+📤 Output
 
 At the end of a league run:
 
-Full ranking by Strength
+    Full ranking by Strength
 
-Full ranking by Efficiency
+    Full ranking by Efficiency
 
-Pareto frontier (speed vs strength)
+    Pareto frontier (speed vs. strength)
 
-CSV export of all agent statistics
+    CSV export of all agent statistics
 
 Example:
 
 Wrote CSV: league_results_YYYYMMDD_HHMMSS.csv
 
-Project Structure
+🗂️ Project Structure
+
 connect4/
-├── ai/                 # Agent implementations
-├── core/               # Board + rules
-├── game/               # Game state
+├── ai/        # Agent implementations
+├── core/      # Board + rules
+├── game/      # Game state
 ├── scripts/
-│   ├── league.py       # Tournament engine
-│   ├── league_main.py  # CLI entry
-├── ui/                 # Terminal UI
-└── __main__.py
+│   ├── league.py        # Tournament engine
+│   ├── league_main.py   # CLI entry
+├── ui/        # Terminal UI
+└── main.py
 
-Design Goals
+🎯 Design Goals
 
-Fair AI evaluation
+    Fair AI evaluation
 
-Statistical rigor
+    Statistical rigor
 
-Speed/strength tradeoff visibility
+    Transparent speed vs. strength tradeoffs
 
-Scalable experimentation
+    Scalable experimentation
 
-Web-ready architecture
+    Web-ready architecture
 
-Future Roadmap
+🔮 Future Roadmap
 
 Planned extensions:
 
-🌐 Web UI (agent selection, live games)
+    🌐 Web UI (agent selection, live matches)
 
-📊 Interactive charts (Elo-like plots, Pareto graphs)
+    📊 Interactive charts (Pareto plots, Elo-like curves)
 
-🎥 Game replays
+    🎥 Game replays
 
-🔌 API backend (FastAPI)
+    🔌 API backend (FastAPI)
 
-🧠 Self-play training hooks
+    🧠 Self-play training hooks
 
-Why This Is Interesting
+🤔 Why This Is Interesting
 
-This project goes beyond “who wins” and answers:
+This system answers deeper questions than “who wins?”:
 
-Which agents scale well?
+    Which agents scale well?
 
-Which strategies are compute-efficient?
+    Which strategies are compute-efficient?
 
-Where is the Pareto frontier of intelligence vs speed?
+    Where is the Pareto frontier of intelligence vs. speed?
 
-It’s a benchmarking system, not just a game.
+➡️ It’s a benchmarking framework, not just a game.
+👤 Author
 
-Author
+Jacob Hamling
+University of Iowa
+Informatics · Analytics · Finance
 
-Built by Jacob Hamling
-University of Iowa — Informatics, Analytics, Finance
-Focus: AI systems, evaluation, and applied decision modeling
+Focus areas:
+
+    AI systems
+
+    Evaluation methodology
+
+    Applied decision modeling
+
+
+If you want, I can also:
+- tighten this into a **GitHub-style README**
+- add **badges + quick-start**
+- rewrite sections to sound more **academic / research-paper-adjacent**
+- prep a **project website landing page version**
