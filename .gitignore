@@ -47,3 +47,8 @@ htmlcov/
 # Optional: local configs
 # --------------------
 .env
+
+
+data/results/
+figures/
+*.csv

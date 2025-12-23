@@ -1,5 +1,5 @@
-
 from __future__ import annotations
+from pathlib import Path
 
 import csv
 import math
@@ -363,7 +363,12 @@ def league_auto_prune(
 
         if export_csv:
             ts = time.strftime("%Y%m%d_%H%M%S")
-            out_path = f"league_results_{ts}.csv"
+                
+            results_dir = Path("data/results")
+            results_dir.mkdir(parents=True, exist_ok=True)
+
+            out_path = results_dir / f"league_results_{ts}.csv"
+
             all_rows = [(t.name, agg[t.name]) for t in teams]
 
             with open(out_path, "w", newline="") as f:

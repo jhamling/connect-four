@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
+
 from .league_core import league_auto_prune
 from .league_format import A
 from .league_roster import build_roster
 
-
 def main() -> None:
+
     roster = build_roster()
     print(A.bold(f"Roster size: {len(roster)} teams"))
 
@@ -48,6 +50,8 @@ def main() -> None:
     sm = input("speed_min_factor (default 0.75): ").strip()
     speed_min_factor = float(sm) if sm else 0.75
 
+    start = time.perf_counter()
+
     league_auto_prune(
         roster,
         games_per_pair=games_per_pair,
@@ -65,6 +69,16 @@ def main() -> None:
         speed_min_factor=speed_min_factor,
         export_csv=True,
     )
+
+    end = time.perf_counter()
+    elapsed = end - start
+
+    h = int(elapsed // 3600)
+    m = int((elapsed % 3600) // 60)
+    s = elapsed % 60  
+
+    print(A.bold(f"Total runtime: {h}:{m:02d}:{s:06.3f}"))
+
 
 
 if __name__ == "__main__":
