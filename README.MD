@@ -1,4 +1,4 @@
-# ♟️ Connect Four AI League & Tournament System
+#  Connect Four AI League & Tournament System
 
 A **high-performance Connect Four AI framework** built for **experimentation, benchmarking, and research**.  
 This project evaluates *dozens to hundreds* of AI agents under statistically grounded tournament conditions, with a clear separation between **strategic strength** and **computational efficiency**.
@@ -7,19 +7,19 @@ This project evaluates *dozens to hundreds* of AI agents under statistically gro
 
 ---
 
-## 🚀 Highlights
+##  Highlights
 
-- ⚙️ Fast, headless simulation engine
-- 🤖 Dozens of AI architectures with parameterized variants
-- 📉 Auto-pruning league tournament (scales to hundreds of agents)
-- 📊 Statistically robust scoring (Wilson confidence bounds)
-- ⚖️ Explicit strength vs. speed tradeoff analysis
-- 📦 Reproducible runs with deterministic seeding
-- 🌐 Designed for future web visualization
+-  Fast, headless simulation engine
+-  Dozens of AI architectures with parameterized variants
+-  Auto-pruning league tournament (scales to hundreds of agents)
+-  Statistically robust scoring (Wilson confidence bounds)
+-  Explicit strength vs. speed tradeoff analysis
+-  Reproducible runs with deterministic seeding
+-  Designed for future web visualization
 
 ---
 
-## 🎮 Game Engine
+##  Game Engine
 
 - Full **Connect Four ruleset**
 - Headless game loop for maximum throughput
@@ -28,7 +28,7 @@ This project evaluates *dozens to hundreds* of AI agents under statistically gro
 
 ---
 
-## 🤖 AI Agents
+##  AI Agents
 
 Implemented agent families:
 
@@ -49,11 +49,11 @@ Each agent supports **parameterized variants**:
 - Exploration constants
 - Heuristic weights
 
-➡️ A single league run can easily include **hundreds of unique agents**.
+ A single league run can easily include **hundreds of unique agents**.
 
 ---
 
-## 🏆 League Tournament System  
+##  League Tournament System  
 ### Auto-Pruning Tournament
 
 Instead of an infeasible full round-robin, agents compete in **staged tournaments**:
@@ -70,13 +70,13 @@ Instead of an infeasible full round-robin, agents compete in **staged tournament
 
 ---
 
-## 📐 Scoring & Metrics
+##  Scoring & Metrics
 
 The system **explicitly separates strength from speed**.
 
 ---
 
-### 💪 Strength (Primary Metric)
+###  Strength (Primary Metric)
 
 Computed using a **Wilson Lower Confidence Bound (LCB)** over points-per-game:
 
@@ -91,7 +91,7 @@ Strength = WilsonLCB(PPG, z)
 
 ---
 
-### ⚡ Efficiency (Strength × Speed)
+###  Efficiency (Strength × Speed)
 
 To avoid rewarding only trivial fast agents:
 
@@ -110,7 +110,7 @@ speed_min_factor,
 
 ---
 
-### 📊 Additional Tracked Stats
+###  Additional Tracked Stats
 
 - Wins / Draws / Losses
 - Games played
@@ -121,7 +121,7 @@ speed_min_factor,
 
 ---
 
-## 🧪 CLI Usage
+##  CLI Usage
 
 Run the project:
 
@@ -150,8 +150,8 @@ You’ll be prompted for:
 
     Parallel worker count
 
-✔️ Sensible defaults are provided for quick testing.
-🧠 Recommended Final Run Settings
+Sensible defaults are provided for quick testing.
+Recommended Final Run Settings
 
 (Research-grade / conclusive data)
 Setting	Value
@@ -168,8 +168,8 @@ speed_min_factor	0.75
 Workers	6
 Batch size	16
 
-⏱️ Expected runtime: hours, not minutes.
-📤 Output
+Expected runtime: hours, not minutes.
+Output
 
 At the end of a league run:
 
@@ -185,19 +185,7 @@ Example:
 
 Wrote CSV: league_results_YYYYMMDD_HHMMSS.csv
 
-🗂️ Project Structure
-
-connect4/
-├── ai/        # Agent implementations
-├── core/      # Board + rules
-├── game/      # Game state
-├── scripts/
-│   ├── league.py        # Tournament engine
-│   ├── league_main.py   # CLI entry
-├── ui/        # Terminal UI
-└── main.py
-
-🎯 Design Goals
+Design Goals
 
     Fair AI evaluation
 
@@ -209,7 +197,7 @@ connect4/
 
     Web-ready architecture
 
-🔮 Future Roadmap
+Future Roadmap
 
 Planned extensions:
 
@@ -233,24 +221,5 @@ This system answers deeper questions than “who wins?”:
 
     Where is the Pareto frontier of intelligence vs. speed?
 
-➡️ It’s a benchmarking framework, not just a game.
-👤 Author
+It’s a benchmarking framework, not just a game.
 
-Jacob Hamling
-University of Iowa
-Informatics · Analytics · Finance
-
-Focus areas:
-
-    AI systems
-
-    Evaluation methodology
-
-    Applied decision modeling
-
-
-If you want, I can also:
-- tighten this into a **GitHub-style README**
-- add **badges + quick-start**
-- rewrite sections to sound more **academic / research-paper-adjacent**
-- prep a **project website landing page version**
